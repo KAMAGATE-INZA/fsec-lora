@@ -54,7 +54,7 @@ confiance à 95 %.
 - Données transitoires (TTL), corrélation spatiale (champ latent par cluster).
 - **Hit servi par le backhaul IP** (pas de duty cycle) ; **miss récupéré par la
   radio** (duty cycle + énergie capteur).
-- FSEC-LoRa : score `U = F^α (1−S)^β E^γ` pour le placement et l'éviction ; le
+- FSEC-LoRa : score `U = F^α (1−S)^β (1 + κ(1−E))` pour le placement et l'éviction ; le
   duty cycle `C` se simplifie dans la décision de placement et est appliqué à
   l'émission (offload near-quota → DCVR = 0) ; corrélation spatiale réalisée par
   des **hits sémantiques** (un voisin proche sert la requête) ; **fraîcheur

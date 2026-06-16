@@ -19,7 +19,7 @@ prototype Python (`../fsec_sim.py`).
 | Fichier | Rôle |
 |---|---|
 | `lora-constraints.hpp` | Time-on-Air, `DutyCycleTracker`, `LoraContext` (positions, énergie, voisinage, noyau spatial). |
-| `fsec-lora-policy.hpp/.cpp` | Politique de Content Store `nfd::cs::fsec::FsecLoRaPolicy` (placement + remplacement unifiés par `U = F^α (1−S)^β E^γ`). |
+| `fsec-lora-policy.hpp/.cpp` | Politique de Content Store `nfd::cs::fsec::FsecLoRaPolicy` (placement + remplacement unifiés par `U = F^α (1−S)^β (1 + κ(1−E))`). |
 | `fsec-scenario.cpp` | Scénario ns-3 modèle (capteurs → passerelle → serveur). |
 
 ## Conventions

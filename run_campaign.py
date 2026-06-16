@@ -29,9 +29,9 @@ from dataclasses import replace
 from fsec_sim import Config, run_one
 
 RESULTS = os.path.join(os.path.dirname(__file__), "results.csv")
-STRATS = ["No-cache", "LRU", "LFU", "Prob", "AdaptiveTTL", "FSEC"]
+STRATS = ["No-cache", "LRU", "LFU", "Prob", "AdaptiveTTL", "pCASTING", "CFPC", "FSEC"]
 FIELDS = ["experiment", "strategy", "cache_size", "sf", "battery_frac",
-          "alpha", "beta", "gamma", "lam", "seed",
+          "alpha", "beta", "kappa", "gamma", "lam", "seed",
           "CHR", "FHR", "EUB", "DCVR", "lifetime", "latency_ms", "n_requests"]
 
 
@@ -47,7 +47,7 @@ def build_jobs() -> list[dict]:
     for seed in range(30):
         jobs.append(dict(experiment="cache", strategy="No-cache",
                          cache_size=0, sf=7, battery_init_frac=1.0, seed=seed))
-        for strat in ["LRU", "LFU", "Prob", "AdaptiveTTL", "FSEC"]:
+        for strat in ["LRU", "LFU", "Prob", "AdaptiveTTL", "pCASTING", "CFPC", "FSEC"]:
             for cs in [50, 100, 250, 500]:
                 jobs.append(dict(experiment="cache", strategy=strat,
                                  cache_size=cs, sf=7, battery_init_frac=1.0, seed=seed))
@@ -68,16 +68,16 @@ def build_jobs() -> list[dict]:
                 jobs.append(dict(experiment="battery", strategy=strat,
                                  cache_size=cs, sf=7, battery_init_frac=bf, seed=seed))
 
-    # --- EXP 4 : grid search exposants FSEC (scenario allege pour la vitesse) ---
+    # --- EXP 4 : grid search des parametres FSEC (alpha, beta, kappa) ---
+    # kappa=0 inclus pour montrer l'apport du terme d'energie (cout d'un miss).
     for seed in range(5):
         for a in [0.5, 1.0, 2.0]:
             for b in [0.5, 1.0, 2.0]:
-                for g in [0.5, 1.0, 2.0]:
-                    for l in [0.5, 1.0, 2.0]:
-                        jobs.append(dict(experiment="grid", strategy="FSEC",
-                                         cache_size=100, sf=7, battery_init_frac=1.0,
-                                         alpha=a, beta=b, gamma=g, lam=l, seed=seed,
-                                         n_sensors=120, sim_time=1800.0))
+                for k in [0.0, 1.0, 2.0, 3.0]:
+                    jobs.append(dict(experiment="grid", strategy="FSEC",
+                                     cache_size=100, sf=7, battery_init_frac=1.0,
+                                     alpha=a, beta=b, kappa=k, seed=seed,
+                                     n_sensors=120, sim_time=1800.0))
     return jobs
 
 
@@ -85,14 +85,15 @@ def job_key(j: dict) -> tuple:
     return (j["experiment"], j["strategy"], j["cache_size"], j["sf"],
             j["battery_frac"] if "battery_frac" in j else j.get("battery_init_frac"),
             round(j.get("alpha", 1.5), 3), round(j.get("beta", 1.0), 3),
+            round(j.get("kappa", 3.0), 3),
             round(j.get("gamma", 1.0), 3), round(j.get("lam", 2.0), 3), j["seed"])
 
 
 def row_key(r: dict) -> tuple:
     return (r["experiment"], r["strategy"], int(r["cache_size"]), int(r["sf"]),
             float(r["battery_frac"]), round(float(r["alpha"]), 3),
-            round(float(r["beta"]), 3), round(float(r["gamma"]), 3),
-            round(float(r["lam"]), 3), int(r["seed"]))
+            round(float(r["beta"]), 3), round(float(r["kappa"]), 3),
+            round(float(r["gamma"]), 3), round(float(r["lam"]), 3), int(r["seed"]))
 
 
 def run_job(j: dict) -> dict:
@@ -103,7 +104,8 @@ def run_job(j: dict) -> dict:
         "experiment": j["experiment"], "strategy": cfg.strategy,
         "cache_size": cfg.cache_size, "sf": cfg.sf,
         "battery_frac": cfg.battery_init_frac,
-        "alpha": cfg.alpha, "beta": cfg.beta, "gamma": cfg.gamma, "lam": cfg.lam,
+        "alpha": cfg.alpha, "beta": cfg.beta, "kappa": cfg.kappa,
+        "gamma": cfg.gamma, "lam": cfg.lam,
         "seed": cfg.seed,
         "CHR": m["CHR"], "FHR": m["FHR"], "EUB": m["EUB"], "DCVR": m["DCVR"],
         "lifetime": m["lifetime"], "latency_ms": m["latency_ms"],

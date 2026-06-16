@@ -34,9 +34,10 @@ HERE = os.path.dirname(__file__)
 FIGDIR = os.path.join(HERE, "figures")
 os.makedirs(FIGDIR, exist_ok=True)
 
-STRAT_ORDER = ["No-cache", "LRU", "LFU", "Prob", "AdaptiveTTL", "FSEC"]
+STRAT_ORDER = ["No-cache", "LRU", "LFU", "Prob", "AdaptiveTTL", "pCASTING", "CFPC", "FSEC"]
 COLORS = {"No-cache": "#888888", "LRU": "#1f77b4", "LFU": "#2ca02c",
-          "Prob": "#9467bd", "AdaptiveTTL": "#ff7f0e", "FSEC": "#d62728"}
+          "Prob": "#9467bd", "AdaptiveTTL": "#ff7f0e",
+          "pCASTING": "#17becf", "CFPC": "#8c564b", "FSEC": "#d62728"}
 
 
 # ---------------------------------------------------------------------------
@@ -227,15 +228,18 @@ def fig_grid_sensitivity(df):
     d = df[df.experiment == "grid"].copy()
     # objectif : maximiser CHR*FHR sous DCVR=0, EUB en departage
     d["score"] = d.CHR * d.FHR / 100.0
-    fig, axes = plt.subplots(1, 4, figsize=(15, 3.5))
-    for ax, expo in zip(axes, ["alpha", "beta", "gamma", "lam"]):
+    params = [("alpha", "Exposant α (fraîcheur)"),
+              ("beta", "Exposant β (corrélation)"),
+              ("kappa", "Poids κ (coût d'un miss)")]
+    fig, axes = plt.subplots(1, 3, figsize=(13, 3.5))
+    for ax, (expo, label) in zip(axes, params):
         mean, ci = agg(d, expo, "score")
         ax.errorbar(mean.index, mean.values, yerr=ci.values, marker="o", capsize=3,
                     color="#d62728")
-        ax.set_xlabel(f"Exposant {expo}")
+        ax.set_xlabel(label)
         ax.set_ylabel("Score CHR·FHR/100")
         ax.grid(True, alpha=0.3)
-    fig.suptitle("Sensibilité aux exposants FSEC (grid search)", fontweight="bold")
+    fig.suptitle("Sensibilité aux paramètres FSEC (grid search)", fontweight="bold")
     fig.tight_layout()
     fig.savefig(os.path.join(FIGDIR, "fig_grid_sensitivity.png"), dpi=150)
     fig.savefig(os.path.join(FIGDIR, "fig_grid_sensitivity.pdf"))
@@ -252,27 +256,29 @@ def print_summary(df):
     print(hdr)
     for s in STRAT_ORDER:
         sub = d[d.strategy == s]
-        print(f"{s:12} {sub.CHR.mean():7.1f} {sub.FHR.mean():7.1f} {sub.EUB.mean():9.4f} "
+        # FHR sans objet pour No-cache (aucun hit) -> N/A
+        fhr = "    N/A" if s == "No-cache" else f"{sub.FHR.mean():7.1f}"
+        print(f"{s:12} {sub.CHR.mean():7.1f} {fhr} {sub.EUB.mean():9.4f} "
               f"{sub.DCVR.mean():7.1f} {sub.lifetime.mean():8.0f} {sub.latency_ms.mean():8.0f}")
 
-    # --- grid search : meilleurs exposants ---
+    # --- grid search : meilleurs parametres (alpha, beta, kappa) ---
     g = df[df.experiment == "grid"].copy()
-    gg = g.groupby(["alpha", "beta", "gamma", "lam"]).agg(
+    gg = g.groupby(["alpha", "beta", "kappa"]).agg(
         CHR=("CHR", "mean"), FHR=("FHR", "mean"),
         EUB=("EUB", "mean"), DCVR=("DCVR", "mean")).reset_index()
     feasible = gg[gg.DCVR == 0]
     feasible = feasible if len(feasible) else gg
     feasible = feasible.assign(score=feasible.CHR * feasible.FHR / 100.0)
     best = feasible.sort_values(["score", "EUB"], ascending=[False, True]).iloc[0]
-    print("\n================ GRID SEARCH : meilleurs exposants ================")
-    print(f"alpha={best.alpha}, beta={best.beta}, gamma={best.gamma}, lambda={best.lam}  "
+    print("\n================ GRID SEARCH : meilleurs parametres ================")
+    print(f"alpha={best.alpha}, beta={best.beta}, kappa={best.kappa}  "
           f"-> CHR={best.CHR:.1f}%, FHR={best.FHR:.1f}%, EUB={best.EUB:.4f}, DCVR={best.DCVR:.1f}%")
 
     # --- ANOVA : FSEC vs references sur le CHR (cache=100) ---
     print("\n================ ANOVA (cache=100) : FSEC vs references ================")
     for metric in ["CHR", "FHR", "EUB", "DCVR"]:
         groups = [d[d.strategy == s][metric].values
-                  for s in ["LRU", "LFU", "Prob", "AdaptiveTTL", "FSEC"]]
+                  for s in ["LRU", "LFU", "Prob", "AdaptiveTTL", "pCASTING", "CFPC", "FSEC"]]
         F, p, df1, df2 = anova_oneway(groups)
         sig = "significatif" if p < 0.05 else "non significatif"
         print(f"  {metric:5} : F({df1},{df2})={F:8.2f}  p={p:.3e}  ({sig})")

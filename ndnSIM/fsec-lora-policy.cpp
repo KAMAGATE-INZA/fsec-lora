@@ -73,7 +73,10 @@ FsecLoRaPolicy::parseMeta(EntryRef i, uint32_t& sensorId,
 }
 
 // --------------------------------------------------------------------------
-// Score d'utilite U = F^alpha (1-S)^beta E^gamma.
+// Score d'utilite U = F^alpha (1-S)^beta (1 + kappa (1-E)).
+// L'energie entre comme un COUT D'UN MISS : plus le producteur est faible
+// (E -> 0), plus garder sa donnee est prioritaire ; le plancher 1 evite toute
+// degradation a batterie pleine (E -> 1).
 // --------------------------------------------------------------------------
 double
 FsecLoRaPolicy::utility(EntryRef i) const
@@ -120,7 +123,7 @@ FsecLoRaPolicy::utility(EntryRef i) const
     }
   }
 
-  return std::pow(F, m_alpha) * std::pow(1.0 - S, m_beta) * std::pow(E, m_gamma);
+  return std::pow(F, m_alpha) * std::pow(1.0 - S, m_beta) * (1.0 + m_kappa * (1.0 - E));
 }
 
 // --------------------------------------------------------------------------

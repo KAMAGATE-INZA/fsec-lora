@@ -6,7 +6,7 @@
  *
  * Derive de nfd::cs::Policy (meme interface que la LruPolicy native). Le
  * placement et le remplacement sont unifies par une fonction d'utilite
- *      U(D) = F^alpha * (1 - S)^beta * E^gamma
+ *      U(D) = F^alpha * (1 - S)^beta * (1 + kappa * (1 - E))
  * ou F est la fraicheur, S la redondance spatiale (noyau gaussien) et E
  * l'energie du capteur producteur. Le facteur de duty cycle C est COMMUN a
  * tous les paquets a un instant donne : il se simplifie dans la comparaison
@@ -39,10 +39,10 @@ public:
 
   static const std::string POLICY_NAME;
 
-  // Exposants de la fonction d'utilite (reglables via attributs/scenario).
+  // Parametres de la fonction d'utilite (reglables via attributs/scenario).
   void setAlpha(double a) { m_alpha = a; }
   void setBeta(double b)  { m_beta = b; }
-  void setGamma(double g) { m_gamma = g; }
+  void setKappa(double k) { m_kappa = k; }   // poids du cout d'un miss (energie)
   void setUSeuil(double u) { m_uSeuil = u; }
 
 private:
@@ -53,7 +53,8 @@ private:
   void doBeforeUse(EntryRef i) override;
   void evictEntries() override;
 
-  // Calcul du score d'utilite d'une entree (F^alpha (1-S)^beta E^gamma).
+  // Calcul du score d'utilite d'une entree :
+  //   U = F^alpha (1-S)^beta (1 + kappa (1-E)).
   double utility(EntryRef i) const;
 
   // Outils de parsing des metadonnees portees par le Data.
@@ -64,7 +65,7 @@ private:
   std::list<EntryRef> m_entries;   // entrees suivies par la politique
   double m_alpha = 1.5;
   double m_beta  = 1.0;
-  double m_gamma = 1.0;
+  double m_kappa = 3.0;
   double m_uSeuil = 0.05;
 };
 

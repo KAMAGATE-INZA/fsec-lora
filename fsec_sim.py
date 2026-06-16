@@ -86,8 +86,11 @@ class Config:
     # parametres FSEC
     alpha: float = 1.5             # fraicheur
     beta: float = 1.0              # correlation spatiale
-    gamma: float = 1.0             # energie
-    lam: float = 2.0               # duty cycle
+    kappa: float = 3.0             # poids du cout d'un miss (energie / protection des noeuds faibles)
+    kappa_toa: float = 0.0         # poids du Time-on-Air dans le cout d'un miss (scenario ADR)
+    adr: bool = False              # SF heterogenes par capteur (Adaptive Data Rate)
+    gamma: float = 1.0             # (obsolete) ancien exposant energie E^gamma, conserve pour compat
+    lam: float = 2.0               # (obsolete) ancien exposant duty cycle, conserve pour compat
     u_seuil: float = 0.05          # seuil d'acceptation
     c_min: float = 0.1             # seuil critique de duty cycle
     sigma_d: float = 80.0          # largeur noyau spatial (m)
@@ -110,6 +113,8 @@ class Sensor:
     y: float
     cluster: int
     battery_j: float
+    sf: int = 7
+    toa: float = 0.0
     last_value: float = 0.0
     last_gen_time: float = -1e9
     alive: bool = True
@@ -157,7 +162,15 @@ class Simulator:
             x = min(max(self.rng.gauss(cx, cfg.area * 0.04), 0), cfg.area)
             y = min(max(self.rng.gauss(cy, cfg.area * 0.04), 0), cfg.area)
             bat = cfg.battery_capacity_j * cfg.battery_init_frac
-            self.sensors.append(Sensor(i, x, y, c, bat))
+            s = Sensor(i, x, y, c, bat)
+            if cfg.adr:
+                # ADR : SF attribue selon la distance a la passerelle (centre)
+                dg = math.dist((x, y), (cfg.area / 2.0, cfg.area / 2.0))
+                s.sf = 7 if dg < cfg.area * 0.22 else (9 if dg < cfg.area * 0.38 else 12)
+            else:
+                s.sf = cfg.sf
+            s.toa = time_on_air(s.sf)
+            self.sensors.append(s)
         # champ latent par cluster (valeur de base ~ temperature)
         self.cluster_base = [self.rng.uniform(15, 30) for _ in range(cfg.n_clusters)]
         # voisinage spatial precalcule (pour S(D))
@@ -198,6 +211,7 @@ class Simulator:
         self.energy_gateway_j = 0.0  # energie radio de la passerelle
         self.latency_sum = 0.0
         self.first_death = None
+        self.req_count = defaultdict(int)  # popularite par capteur (pour CFPC)
 
     # --- dynamique des valeurs --------------------------------------------
     def sensor_value(self, s: Sensor, t: float) -> float:
@@ -221,24 +235,26 @@ class Simulator:
         self._dc_refresh(t)
         return 1.0 - self.dc_used / self.cfg.dc_max
 
-    def _do_radio_tx(self, t: float, aware: bool) -> bool:
+    def _do_radio_tx(self, t: float, aware: bool, toa: float = None) -> bool:
         """Tente une emission radio. Renvoie True si emise, False si declinee.
-        Compte une violation si une politique aveugle emet au-dela du quota."""
+        Compte une violation si une politique aveugle emet au-dela du quota.
+        toa : Time-on-Air de la trame (par defaut celui de la passerelle)."""
+        toa = self.toa if toa is None else toa
         self._dc_refresh(t)
         self.n_radio_tx += 1
-        would_exceed = (self.dc_used + self.toa) > self.cfg.dc_max
+        would_exceed = (self.dc_used + toa) > self.cfg.dc_max
         if aware and would_exceed:
             return False  # FSEC offloade vers le backhaul -> pas de violation
         if would_exceed:
             self.n_dc_violations += 1
-        self.tx_times.append((t, self.toa))
-        self.dc_used += self.toa
-        self.energy_gateway_j += self.toa * I_TX * V_BAT
+        self.tx_times.append((t, toa))
+        self.dc_used += toa
+        self.energy_gateway_j += toa * I_TX * V_BAT
         return True
 
     # --- energie capteur ---------------------------------------------------
     def _sensor_uplink(self, s: Sensor, t: float):
-        e = self.toa * I_TX * V_BAT
+        e = s.toa * I_TX * V_BAT
         s.battery_j -= e
         self.energy_sensors_j += e
         if s.battery_j <= 0 and s.alive:
@@ -265,24 +281,35 @@ class Simulator:
 
     # --- score d'utilite FSEC ---------------------------------------------
     def fsec_utility(self, sid: int, value: float, t_gen: float, t: float) -> float:
-        """Score de placement et de remplacement.
+        """Score de placement et de remplacement (modele "cout d'un miss").
 
-        La fonction d'utilite complete du memoire est
-            U(D) = F^alpha (1-S)^beta E^gamma C^lambda.
-        Le facteur de duty cycle C est COMMUN a tous les paquets du routeur a un
-        instant t (cf. chapitre 3) : il se simplifie dans la comparaison relative
-        U(D) > U(D_min) et n'intervient donc pas dans la discrimination du
-        placement ni de l'eviction. La conformite au duty cycle est assuree au
-        moment de l'EMISSION (offload de la reponse vers le backhaul quand le
-        quota est presque epuise, methode _do_radio_tx), ce qui garantit DCVR=0.
-        On evalue donc ici la composante discriminante F^alpha (1-S)^beta E^gamma.
+        U(D) = F^alpha * (1 - S)^beta * (1 + kappa * (1 - E)).
+
+        Interpretation : U(D) estime les RESSOURCES ECONOMISEES en gardant D en
+        cache. F est la fenetre de validite restante (donc le nombre de hits que
+        D peut encore servir), (1-S) la non-redondance (un voisin cache rend D
+        inutile), et le facteur (1 + kappa(1-E)) est le COUT d'un miss pour le
+        producteur : plus sa batterie est faible (E -> 0), plus une re-emission
+        lui coute cher, donc plus il est prioritaire de cacher sa donnee. Le
+        plancher 1 garantit qu'a batterie pleine (E -> 1) le terme vaut 1 et ne
+        degrade pas le placement : l'energie ne discrimine que lorsqu'elle compte.
+
+        Le duty cycle C reste COMMUN a tous les paquets a un instant t : il se
+        simplifie dans la comparaison U(D) > U(D_min) et est gere a l'EMISSION
+        (offload backhaul pres du quota, _do_radio_tx), ce qui garantit DCVR=0.
         """
         cfg = self.cfg
         age = t - t_gen
         F = max(0.0, (cfg.ttl - age) / cfg.ttl)
         S = self.spatial_redundancy(sid, value)
         E = max(0.0, self.sensors[sid].battery_j / cfg.battery_capacity_j)
-        return (F ** cfg.alpha) * ((1 - S) ** cfg.beta) * (E ** cfg.gamma)
+        miss_cost = 1.0 + cfg.kappa * (1.0 - E)
+        if cfg.kappa_toa > 0.0:
+            # cout radio d'un miss : un producteur a fort SF (ToA long) coute plus
+            # cher a rafraichir (pertinent en deploiement ADR / SF mixtes)
+            toa_max = time_on_air(12)
+            miss_cost += cfg.kappa_toa * (self.sensors[sid].toa / toa_max)
+        return (F ** cfg.alpha) * ((1 - S) ** cfg.beta) * miss_cost
 
     # --- gestion du cache selon la politique ------------------------------
     def _evict_for(self, new_entry: CacheEntry, t: float) -> bool:
@@ -298,8 +325,8 @@ class Simulator:
             victim = min(self.cache.values(), key=lambda e: e.freq)
             del self.cache[victim.sid]
             return True
-        if strat == "Prob":
-            self.cache.popitem(last=False)
+        if strat in ("Prob", "pCASTING", "CFPC"):
+            self.cache.popitem(last=False)  # eviction LRU (conforme aux papiers)
             return True
         if strat == "AdaptiveTTL":
             # least fresh first : evince la donnee la plus proche de l'expiration
@@ -326,6 +353,28 @@ class Simulator:
             return
         if strat == "Prob" and self.rng.random() > cfg.prob_p:
             return
+        if strat == "pCASTING":
+            # Hail et al. 2015 : placement probabiliste, probabilite = moyenne de
+            # (energie EN, 1-occupation OC, fraicheur residuelle FR) ; eviction LRU.
+            if t - t_gen > cfg.ttl:
+                return
+            EN = max(0.0, self.sensors[sid].battery_j / cfg.battery_capacity_j)
+            OC = (len(self.cache) / cfg.cache_size) if cfg.cache_size else 1.0
+            FR = max(0.0, (cfg.ttl - (t - t_gen)) / cfg.ttl)
+            fu = (EN + (1.0 - OC) + FR) / 3.0
+            if self.rng.random() > fu:
+                return
+        if strat == "CFPC":
+            # Amadeo et al. 2020 : les contenus populaires sont caches, les autres
+            # seulement s'il reste de la place ; eviction LRU. La FreshnessPeriod
+            # etant uniforme ici, la branche de seuil de fraicheur est neutre.
+            if t - t_gen > cfg.ttl:
+                return
+            counts = self.req_count
+            avg = (sum(counts.values()) / len(counts)) if counts else 0.0
+            popular = counts.get(sid, 0) >= avg
+            if not popular and len(self.cache) >= cfg.cache_size:
+                return
         if strat == "FSEC":
             # filtres durs : expiration et seuil d'utilite.
             # (le duty cycle est applique a l'emission, pas au placement)
@@ -348,6 +397,7 @@ class Simulator:
     def handle_request(self, sid: int, t: float):
         cfg = self.cfg
         self.n_requests += 1
+        self.req_count[sid] += 1
         freshness_req = self.rng.uniform(cfg.freshness_req_min, cfg.freshness_req_max)
         aware = (cfg.strategy == "FSEC")
         # Politiques conscientes de la fraicheur : elles refusent de servir une
@@ -408,7 +458,7 @@ class Simulator:
                 return
             value = self.sensor_value(s, t)
             self._sensor_uplink(s, t)
-            emitted = self._do_radio_tx(t, aware)   # FSEC offloade si quota epuise
+            emitted = self._do_radio_tx(t, aware, s.toa)   # FSEC offloade si quota epuise
             self.useful_bits += PAYLOAD_BYTES * 8
             self.latency_sum += 0.5 if emitted else 0.8  # offload = latence accrue
             self._try_place(sid, value, s.last_gen_time, t)
@@ -456,6 +506,6 @@ def run_one(cfg: Config) -> dict:
 
 if __name__ == "__main__":
     # demonstration rapide
-    for strat in ["No-cache", "LRU", "LFU", "Prob", "AdaptiveTTL", "FSEC"]:
+    for strat in ["No-cache", "LRU", "LFU", "Prob", "AdaptiveTTL", "pCASTING", "CFPC", "FSEC"]:
         c = Config(strategy=strat, seed=1)
         print(run_one(c))

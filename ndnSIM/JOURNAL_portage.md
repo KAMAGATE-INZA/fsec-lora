@@ -1,0 +1,19 @@
+# Journal de bord — Portage FSEC-LoRa sous ndnSIM
+
+> Suivi de l'effort de compilation/exécution sur la machine cible. On note ici : version, erreurs rencontrées, corrections appliquées. Objectif : confirmation indépendante des résultats du prototype Python.
+
+## Paliers
+- [ ] **M0** — Environnement validé (versions ns-3/ndnSIM ; un exemple stock tourne).
+- [ ] **M1** — La politique `FsecLoRaPolicy` compile (signatures `nfd::cs::Policy` adaptées + intégration au build).
+- [ ] **M2** — `fsec-scenario` s'exécute ; `cs-trace.txt` produit ; CHR calculé.
+- [ ] **M3 (bonus)** — Traceurs FHR / EUB / DCVR branchés.
+
+## Environnement (à remplir au M0)
+- ns-3 version : …
+- ndnSIM version / commit : …
+- Build : waf / cmake : …
+- Chemin racine ns-3 : …
+- OS : …
+
+## Journal (date — palier — erreur — correction)
+- …
