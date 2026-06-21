@@ -5,14 +5,31 @@ pour **ndnSIM** (basé sur ns-3 / NFD). Il est destiné à valider, dans
 l'environnement de référence de la communauté NDN, les résultats obtenus avec le
 prototype Python (`../fsec_sim.py`).
 
-> **Avertissement honnête.** Ce code n'a pas pu être compilé dans
-> l'environnement de préparation du mémoire (ndnSIM est une pile lourde qui
-> demande une installation complète de ns-3). Il est écrit au plus près de l'API
-> réelle de `nfd::cs::Policy` (la même que la `LruPolicy` native), mais les
-> signatures et les chemins d'en-têtes **varient selon la version**. Il faut
-> donc le **compiler et l'adapter** sur la machine cible. Les métriques publiées
-> au chapitre Résultats proviennent du prototype Python ; cette implémentation
-> ndnSIM sert à les confirmer et constitue la base du dépôt open-source.
+> **Statut : compile et s'exécute sous ndnSIM 2.9 (NFD 22.02).** La politique
+> `FsecLoRaPolicy` a été portée avec succès : elle compile, s'enregistre et
+> s'exécute dans ndnSIM. Recette de portage (voir `JOURNAL_portage.md`) :
+> 1. ajouter `#include "table/cs.hpp"` dans `fsec-lora-policy.cpp` (pour `getCs()->size()`) ;
+> 2. copier `lora-constraints.hpp`, `fsec-lora-policy.hpp/.cpp` dans
+>    `src/ndnSIM/NFD/daemon/table/` (le `wscript` les ramasse automatiquement) ;
+> 3. enregistrer la politique dans `m_csPolicies` du constructeur de
+>    `src/ndnSIM/helper/ndn-stack-helper.cpp` (la `StackHelper` de ndnSIM tient
+>    sa propre liste, indépendante de `NFD_REGISTER_CS_POLICY`) ;
+> 4. placer le scénario en `.cc` (pas `.cpp`) dans `scratch/` ;
+> 5. dans `parseMeta`, lire l'identifiant via `name.get(1).toSequenceNumber()`
+>    (le consommateur ndnSIM nomme `/fsec/seq=<n>`, composant typé, pas un nombre
+>    brut — `std::stoul` échouait et faisait rejeter toutes les données).
+>
+> **Constat honnête (mesuré, 3600 s, cache 100, Zipf s=0,8).** Au seul niveau du
+> Content Store, FSEC obtient un CHR de **55,7 %** contre **74,2 %** pour LRU. Ce
+> n'est pas un défaut d'implémentation : le terme spatial `(1−S)` *déduplique*
+> (refuse de cacher un voisin corrélé déjà présent) sans *resservir*, car les
+> **hits sémantiques** relèvent du **plan de transfert**, absent de ce scénario.
+> Preuve du mécanisme : en désactivant la corrélation (σ_d=1), le CHR de FSEC
+> remonte à **69,8 %**, quasi au niveau de LRU. L'avantage en taux de succès du
+> système complet exige donc le service sémantique, laissé en travail futur. Les
+> métriques publiées au chapitre Résultats (FHR, EUB, DCVR, durée de vie)
+> proviennent du prototype Python, que ndnSIM ne trace pas ici. Détails et
+> tableau de mesures : `JOURNAL_portage.md`.
 
 ## Fichiers
 

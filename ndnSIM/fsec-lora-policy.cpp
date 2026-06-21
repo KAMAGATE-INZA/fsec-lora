@@ -7,12 +7,14 @@
  */
 #include "fsec-lora-policy.hpp"
 #include "lora-constraints.hpp"
+#include "table/cs.hpp"      // definition complete de nfd::cs::Cs (necessaire pour getCs()->size())
 
 #include "ns3/simulator.h"   // ns3::Simulator::Now()
 
 #include <cmath>
 #include <cstdlib>
 #include <string>
+#include <iostream>
 
 namespace nfd {
 namespace cs {
@@ -24,6 +26,21 @@ NFD_REGISTER_CS_POLICY(FsecLoRaPolicy);
 FsecLoRaPolicy::FsecLoRaPolicy()
   : Policy(POLICY_NAME)
 {
+}
+
+// Compteurs FHR (statiques : agreges sur toutes les instances de CS).
+// A chaque hit (doBeforeUse), on compte le total et la part encore fraiche.
+static long g_fhrTotal = 0;
+static long g_fhrFresh = 0;
+
+FsecLoRaPolicy::~FsecLoRaPolicy()
+{
+  if (g_fhrTotal > 0) {
+    std::cout << ">>> FHR FSEC : hits=" << g_fhrTotal
+              << " frais=" << g_fhrFresh
+              << " FHR=" << (100.0 * g_fhrFresh / g_fhrTotal) << "%"
+              << std::endl;
+  }
 }
 
 // --------------------------------------------------------------------------
@@ -42,11 +59,14 @@ FsecLoRaPolicy::parseMeta(EntryRef i, uint32_t& sensorId,
   if (name.size() < 2) {
     return false;
   }
+  // Le nom peut porter le numero via un composant typed "sequence" (ndnSIM :
+  // /fsec/seq=<n>) ou un composant numerique brut (/fsec/<n>). On gere les deux.
   try {
-    sensorId = static_cast<uint32_t>(std::stoul(name.get(1).toUri()));
+    sensorId = static_cast<uint32_t>(name.get(1).toSequenceNumber());
   }
   catch (...) {
-    return false;
+    try { sensorId = static_cast<uint32_t>(std::stoul(name.get(1).toUri())); }
+    catch (...) { return false; }
   }
 
   // contenu "value;tgen"
@@ -132,6 +152,10 @@ FsecLoRaPolicy::utility(EntryRef i) const
 void
 FsecLoRaPolicy::doAfterInsert(EntryRef i)
 {
+  // Purge active : on retire d'abord les entrees expirees pour ne jamais servir
+  // de donnee perimee (comportement du prototype).
+  purgeExpired();
+
   // Filtre de placement : on rejette immediatement une donnee de trop faible
   // utilite (transfert sans mise en cache). On evite ainsi le cache thrashing.
   if (utility(i) < m_uSeuil) {
@@ -157,7 +181,33 @@ FsecLoRaPolicy::doBeforeErase(EntryRef i)
 void
 FsecLoRaPolicy::doBeforeUse(EntryRef i)
 {
-  // Hit : aucune action particuliere (pas de file de recence a maintenir).
+  // Mesure du FHR : a chaque hit de cache, comparer l'age reel de la donnee
+  // servie a son TTL (FreshnessPeriod). La fraicheur est un concept natif NDN.
+  uint32_t sid; double v, tg, ttl;
+  if (parseMeta(i, sid, v, tg, ttl)) {
+    double age = ns3::Simulator::Now().GetSeconds() - tg;
+    ++g_fhrTotal;
+    if (age <= ttl) {
+      ++g_fhrFresh;
+    }
+  }
+}
+
+void
+FsecLoRaPolicy::purgeExpired()
+{
+  double now = ns3::Simulator::Now().GetSeconds();
+  for (auto it = m_entries.begin(); it != m_entries.end(); ) {
+    EntryRef e = *it;
+    uint32_t sid; double v, tg, ttl;
+    if (parseMeta(e, sid, v, tg, ttl) && (now - tg) > ttl) {
+      it = m_entries.erase(it);          // retirer du suivi d'abord
+      this->emitSignal(beforeEvict, e);  // puis demander la suppression a la CS
+    }
+    else {
+      ++it;
+    }
+  }
 }
 
 void

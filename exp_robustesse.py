@@ -2,7 +2,7 @@
 exp_robustesse.py
 =================
 Analyses de robustesse de FSEC-LoRa : on fait varier les hypothèses qui
-pourraient « avantager » la stratégie et on vérifie que son avance tient.
+pourraient « avantager » la stratégie et on vérifie que son avanatage tient.
 
 Trois balayages (cache=100, SF7, batterie pleine) :
   (1) largeur du noyau spatial sigma_d   -> force de la corrélation spatiale ;

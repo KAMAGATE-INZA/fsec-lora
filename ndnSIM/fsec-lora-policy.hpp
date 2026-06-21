@@ -36,6 +36,7 @@ namespace fsec {
 class FsecLoRaPolicy : public Policy {
 public:
   FsecLoRaPolicy();
+  ~FsecLoRaPolicy() override;   // affiche le FHR mesure en fin de simulation
 
   static const std::string POLICY_NAME;
 
@@ -56,6 +57,10 @@ private:
   // Calcul du score d'utilite d'une entree :
   //   U = F^alpha (1-S)^beta (1 + kappa (1-E)).
   double utility(EntryRef i) const;
+
+  // Purge active des entrees expirees (age > TTL). Evite de servir une donnee
+  // perimee, alignant le portage sur le prototype (qui ne sert que du frais).
+  void purgeExpired();
 
   // Outils de parsing des metadonnees portees par le Data.
   static bool parseMeta(EntryRef i, uint32_t& sensorId,
