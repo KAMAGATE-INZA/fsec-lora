@@ -28,6 +28,17 @@ SEEDS = list(range(15))
 COLORS = {"FSEC": "#d62728", "LRU": "#1f77b4", "pCASTING": "#17becf"}
 
 
+def _label_axes(axes):
+    """Ajouter des labels alphabétiques (a, b, c, ...) aux axes."""
+    if not hasattr(axes, "__iter__") or isinstance(axes, plt.Axes):
+        axes = [axes]
+    labels = [f"({chr(ord('a') + i)})" for i in range(len(axes))]
+    for ax, label in zip(axes, labels):
+        ax.text(0.02, 1.02, label, transform=ax.transAxes,
+                fontsize=10, fontweight="bold", va="bottom", ha="left",
+                clip_on=False)
+
+
 def _job(args):
     strat, kw, seed = args
     # scenario allege (comme la grille) : etude de sensibilite, pas resultat principal
@@ -81,8 +92,7 @@ def main():
     axes[2].set_xlabel("s : skew de popularité (0 = uniforme)"); axes[2].legend(fontsize=8)
     for ax in axes:
         ax.set_ylabel("CHR (%)"); ax.grid(True, alpha=0.3)
-    fig.suptitle("Robustesse de FSEC-LoRa aux hypothèses de modélisation (cache=100, SF7, IC 95 %)",
-                 fontweight="bold")
+    _label_axes(axes)
     fig.tight_layout()
     fig.savefig(os.path.join(FIGDIR, "fig_robustesse.png"), dpi=150)
     fig.savefig(os.path.join(FIGDIR, "fig_robustesse.pdf"))

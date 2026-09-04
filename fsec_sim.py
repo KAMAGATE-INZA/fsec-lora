@@ -12,7 +12,7 @@ Hypotheses de modelisation (documentees pour le memoire) :
  H1. Topologie LoRaWAN en etoile : N capteurs (producteurs), 1 passerelle
      (routeur NDN avec Content Store), 1 serveur applicatif (consommateur).
  H2. Donnees transitoires : chaque mesure a une periode de fraicheur TTL.
- H3. Corrlation spatiale : la valeur d'un capteur = champ latent lisse au point
+ H3. Correlation spatiale : la valeur d'un capteur = champ latent lisse au point
      du capteur + bruit. Des capteurs proches ont donc des valeurs proches.
  H4. Duty cycle : la passerelle dispose d'un budget d'emission radio
      DC_max = 36 s/heure (1%). Servir une reponse par la radio consomme le
@@ -84,8 +84,8 @@ class Config:
     battery_init_frac: float = 1.0 # fraction de batterie initiale
     battery_capacity_j: float = 4.0  # energie totale d'un capteur (J) -- dimensionnee pour stresser No-cache
     # parametres FSEC
-    alpha: float = 1.5             # fraicheur
-    beta: float = 1.0              # correlation spatiale
+    alpha: float = 1.5             # fraicheur (non influent : confirme par grid search)
+    beta: float = 0.5              # correlation spatiale (optimum grid search : CHR x FHR max, EUB min)
     kappa: float = 3.0             # poids du cout d'un miss (energie / protection des noeuds faibles)
     kappa_toa: float = 0.0         # poids du Time-on-Air dans le cout d'un miss (scenario ADR)
     adr: bool = False              # SF heterogenes par capteur (Adaptive Data Rate)
@@ -100,6 +100,19 @@ class Config:
     freshness_req_min: float = 5.0 # exigence de fraicheur consommateur (s)
     freshness_req_max: float = 20.0
     zipf_s: float = 0.8            # skew de popularite des requetes (0 = uniforme)
+    # --- instrumentation revision PEMWN (additif, defauts neutres) ---
+    dc_enforce_all: bool = False   # True : la regle d'emission (offload backhaul) s'applique a TOUTES les strategies (Exp A)
+    eps_max: float = float("inf")  # tolerance d'erreur semantique |vA-vB| ; inf = aucun filtrage (neutre) (Exp B)
+    arrival: str = "poisson"       # loi d'arrivee des requetes : poisson (defaut) | periodic | bursty (Exp E)
+    layout: str = "clustered"      # deploiement : clustered (defaut) | uniform (faible correlation, Exp C)
+    burst_factor: float = 6.0      # intensite des rafales (mode bursty)
+    burst_duty: float = 0.2        # fraction de temps en rafale (mode bursty)
+    # --- fiabilite radio stochastique (R3/R15/R16 ; defauts = canal parfait) ---
+    per_base: float = 0.0          # taux d'erreur paquet de base (0 = pas de perte)
+    collision: bool = False        # terme de collision dependant de la charge et du ToA
+    coll_coef: float = 2.0         # intensite des collisions (facteur type ALOHA)
+    coll_window: float = 10.0      # fenetre d'estimation de l'occupation canal (s)
+    max_retx: int = 0              # retransmissions max sur perte (0 = aucune)
     seed: int = 1
 
 
@@ -159,8 +172,14 @@ class Simulator:
         for i in range(cfg.n_sensors):
             c = i % cfg.n_clusters
             cx, cy = centers[c]
-            x = min(max(self.rng.gauss(cx, cfg.area * 0.04), 0), cfg.area)
-            y = min(max(self.rng.gauss(cy, cfg.area * 0.04), 0), cfg.area)
+            if cfg.layout == "uniform":
+                # deploiement aleatoire : positions decorrelees des clusters de
+                # valeur -> regime de faible correlation spatiale (Exp C, R7/R8)
+                x = self.rng.uniform(0, cfg.area)
+                y = self.rng.uniform(0, cfg.area)
+            else:
+                x = min(max(self.rng.gauss(cx, cfg.area * 0.04), 0), cfg.area)
+                y = min(max(self.rng.gauss(cy, cfg.area * 0.04), 0), cfg.area)
             bat = cfg.battery_capacity_j * cfg.battery_init_frac
             s = Sensor(i, x, y, c, bat)
             if cfg.adr:
@@ -212,6 +231,19 @@ class Simulator:
         self.latency_sum = 0.0
         self.first_death = None
         self.req_count = defaultdict(int)  # popularite par capteur (pour CFPC)
+        # --- instrumentation revision (additif) ---
+        self.n_exact_hits = 0       # hits exacts (donnee du capteur demande)
+        self.n_sem_hits = 0         # hits semantiques (voisin correle)
+        self.n_sem_rejected = 0     # hits semantiques ecartes car |vA-vB| > eps_max
+        self.n_backhaul = 0         # reponses de miss deleguees au backhaul (offload)
+        self.sem_errors: list[float] = []  # |vA-vB| des hits semantiques servis
+        self._last_sem_err = 0.0
+        # --- fiabilite radio ---
+        self.n_tx_lost = 0          # transmissions perdues definitivement (apres retx)
+        self.n_retx = 0             # retransmissions effectuees
+        self._chan_busy = 0.0       # occupation canal (somme ToA decroissante)
+        self._last_chan_t = 0.0
+        self._chan_load = 0.0       # occupation normalisee [0,1]
 
     # --- dynamique des valeurs --------------------------------------------
     def sensor_value(self, s: Sensor, t: float) -> float:
@@ -222,6 +254,18 @@ class Simulator:
             s.last_value = base + drift + self.rng.gauss(0, 0.3)
             s.last_gen_time = t
         return s.last_value
+
+    def _field_value(self, s: Sensor, t: float) -> float:
+        """Valeur DETERMINISTE du champ latent au point du capteur (sans bruit ni
+        mutation d'etat, donc sans consommer d'alea). Sert a mesurer l'erreur
+        d'approximation semantique |v_A - v_B| sans perturber la simulation."""
+        return self.cluster_base[s.cluster] + 2.0 * math.sin(2 * math.pi * t / 600.0)
+
+    def _dc_aware(self) -> bool:
+        """Vrai si la regle d'emission (offload backhaul pres du quota) s'applique.
+        Par defaut : seulement FSEC (comportement historique). En mode
+        dc_enforce_all : toutes les strategies (comparaison equitable, Exp A)."""
+        return self.cfg.dc_enforce_all or (self.cfg.strategy == "FSEC")
 
     # --- duty cycle --------------------------------------------------------
     def _dc_refresh(self, t: float):
@@ -251,6 +295,31 @@ class Simulator:
         self.dc_used += toa
         self.energy_gateway_j += toa * I_TX * V_BAT
         return True
+
+    # --- fiabilite radio (pertes / collisions) -----------------------------
+    def _chan_add(self, t: float, toa: float):
+        """Met a jour l'occupation du canal (somme des ToA, decroissance exp)."""
+        w = self.cfg.coll_window
+        dt = t - self._last_chan_t
+        if dt > 0:
+            self._chan_busy *= math.exp(-dt / w)
+        self._chan_busy += toa
+        self._last_chan_t = t
+        self._chan_load = min(1.0, self._chan_busy / w)
+
+    def _radio_lost(self, toa: float) -> bool:
+        """Perte d'une trame : PER de base + terme de collision (charge x ToA).
+        Canal parfait par defaut (per_base=0 et collision=False) -> jamais de perte,
+        sans consommer d'alea (non-regression)."""
+        cfg = self.cfg
+        if cfg.per_base <= 0.0 and not cfg.collision:
+            return False
+        p = cfg.per_base
+        if cfg.collision:
+            # periode vulnerable ~ ToA : plus la trame est longue (SF eleve) et le
+            # canal charge, plus la collision est probable (modele type ALOHA)
+            p += 1.0 - math.exp(-cfg.coll_coef * self._chan_load * (toa / self.toa))
+        return self.rng.random() < min(0.99, p)
 
     # --- energie capteur ---------------------------------------------------
     def _sensor_uplink(self, s: Sensor, t: float):
@@ -301,7 +370,9 @@ class Simulator:
         cfg = self.cfg
         age = t - t_gen
         F = max(0.0, (cfg.ttl - age) / cfg.ttl)
-        S = self.spatial_redundancy(sid, value)
+        # FreshEnergy : baseline fraicheur+energie SANS terme spatial (R13). Les
+        # autres strategies conservent la correlation spatiale.
+        S = 0.0 if cfg.strategy == "FreshEnergy" else self.spatial_redundancy(sid, value)
         E = max(0.0, self.sensors[sid].battery_j / cfg.battery_capacity_j)
         miss_cost = 1.0 + cfg.kappa * (1.0 - E)
         if cfg.kappa_toa > 0.0:
@@ -333,7 +404,7 @@ class Simulator:
             victim = min(self.cache.values(), key=lambda e: (e.t_gen + e.ttl) - t)
             del self.cache[victim.sid]
             return True
-        if strat == "FSEC":
+        if strat in ("FSEC", "FreshEnergy"):
             u_new = self.fsec_utility(new_entry.sid, new_entry.value, new_entry.t_gen, t)
             victim, u_min = None, float("inf")
             for e in self.cache.values():
@@ -375,7 +446,7 @@ class Simulator:
             popular = counts.get(sid, 0) >= avg
             if not popular and len(self.cache) >= cfg.cache_size:
                 return
-        if strat == "FSEC":
+        if strat in ("FSEC", "FreshEnergy"):
             # filtres durs : expiration et seuil d'utilite.
             # (le duty cycle est applique a l'emission, pas au placement)
             if t - t_gen > cfg.ttl:
@@ -399,11 +470,11 @@ class Simulator:
         self.n_requests += 1
         self.req_count[sid] += 1
         freshness_req = self.rng.uniform(cfg.freshness_req_min, cfg.freshness_req_max)
-        aware = (cfg.strategy == "FSEC")
+        aware = self._dc_aware()
         # Politiques conscientes de la fraicheur : elles refusent de servir une
         # donnee trop vieille pour le besoin du consommateur (fraicheur dirigee
         # par le consommateur, cf. Nour et al. 2021) et declenchent un refetch.
-        aware_fresh = cfg.strategy in ("FSEC", "AdaptiveTTL")
+        aware_fresh = cfg.strategy in ("FSEC", "AdaptiveTTL", "FreshEnergy")
 
         def serves(e) -> bool:
             if e is None:
@@ -417,6 +488,7 @@ class Simulator:
 
         entry = self.cache.get(sid)
         hit = serves(entry)
+        semantic = False
         # Hit semantique : propre a FSEC. Une requete pour un capteur non cache
         # peut etre satisfaite par un voisin cache suffisamment proche, dont la
         # valeur est correlee (meme grandeur physique). C'est la traduction de la
@@ -433,8 +505,16 @@ class Simulator:
                 if r > best_r:
                     best_r, best_e = r, e
             if best_e is not None and best_r >= cfg.sem_threshold:
-                hit = True
-                entry = best_e
+                # Erreur d'approximation semantique : valeur servie (voisin B) vs
+                # vraie valeur (champ) du capteur demande A, sans mutation d'etat.
+                err = abs(self._field_value(self.sensors[sid], t) - best_e.value)
+                if err <= cfg.eps_max:          # eps_max = inf par defaut -> toujours accepte
+                    hit = True
+                    semantic = True
+                    entry = best_e
+                    self._last_sem_err = err
+                else:
+                    self.n_sem_rejected += 1     # rejete : redevient un vrai miss
 
         if hit:
             # HIT (exact ou semantique) : servi depuis le Content Store via le
@@ -442,6 +522,11 @@ class Simulator:
             entry.freq += 1
             self.cache.move_to_end(entry.sid)
             self.n_hits += 1
+            if semantic:
+                self.n_sem_hits += 1
+                self.sem_errors.append(self._last_sem_err)
+            else:
+                self.n_exact_hits += 1
             # Un hit est FRAIS s'il satisfait l'exigence de fraicheur du
             # consommateur (age de la donnee servie <= besoin exprime).
             age = t - entry.t_gen
@@ -450,26 +535,67 @@ class Simulator:
             self.useful_bits += PAYLOAD_BYTES * 8
             self.latency_sum += 0.05  # latence locale faible (s)
         else:
-            # MISS : il faut recuperer la donnee aupres du capteur par la radio LoRa.
-            #  - le capteur re-emet (uplink, energie capteur)
-            #  - la passerelle utilise la radio (downlink), soumise au duty cycle
+            # MISS : recuperation de la donnee aupres du capteur par la radio LoRa.
+            #  - le capteur emet (uplink, energie capteur), pertes/retransmissions
+            #    possibles ; la passerelle emet la reponse (downlink), soumise au
+            #    duty cycle, avec pertes possibles. Canal parfait par defaut.
             s = self.sensors[sid]
             if not s.alive:
                 return
             value = self.sensor_value(s, t)
-            self._sensor_uplink(s, t)
-            emitted = self._do_radio_tx(t, aware, s.toa)   # FSEC offloade si quota epuise
+            # 1) uplink capteur -> passerelle (avec pertes / retransmissions)
+            up_ok = False
+            for attempt in range(cfg.max_retx + 1):
+                self._sensor_uplink(s, t)
+                self._chan_add(t, s.toa)
+                if attempt > 0:
+                    self.n_retx += 1
+                    self.latency_sum += 0.5
+                if not self._radio_lost(s.toa):
+                    up_ok = True
+                    break
+            if not up_ok:
+                self.n_tx_lost += 1
+                self.latency_sum += 0.8    # donnee non recuperee : requete non servie
+                return
+            # 2) downlink passerelle -> consommateur (duty cycle + pertes)
+            emitted = self._do_radio_tx(t, aware, s.toa)   # offload backhaul si quota epuise (et aware)
+            if emitted:
+                self._chan_add(t, s.toa)
+                for _ in range(cfg.max_retx):
+                    if not self._radio_lost(s.toa):
+                        break
+                    self._do_radio_tx(t, aware, s.toa)
+                    self._chan_add(t, s.toa)
+                    self.n_retx += 1
+                    self.latency_sum += 0.5
+            else:
+                self.n_backhaul += 1   # miss servi par le backhaul (reponse differee)
             self.useful_bits += PAYLOAD_BYTES * 8
             self.latency_sum += 0.5 if emitted else 0.8  # offload = latence accrue
             self._try_place(sid, value, s.last_gen_time, t)
+
+    # --- loi d'arrivee des requetes ---------------------------------------
+    def _next_interval(self) -> float:
+        """Intervalle jusqu'a la prochaine requete. Poisson par defaut (identique
+        a l'historique). Modes 'periodic' (deterministe) et 'bursty' pour Exp E."""
+        cfg = self.cfg
+        if cfg.arrival == "periodic":
+            return 1.0 / cfg.req_rate
+        if cfg.arrival == "bursty":
+            # alternance rafale (intense) / creux, meme debit moyen approximatif
+            if self.rng.random() < cfg.burst_duty:
+                return self.rng.expovariate(cfg.req_rate * cfg.burst_factor)
+            return self.rng.expovariate(cfg.req_rate * cfg.burst_duty)
+        return self.rng.expovariate(cfg.req_rate)  # poisson (defaut)
 
     # --- boucle principale -------------------------------------------------
     def run(self) -> dict:
         cfg = self.cfg
         t = 0.0
-        # processus de Poisson des requetes
+        # arrivee des requetes (Poisson par defaut)
         while t < cfg.sim_time:
-            t += self.rng.expovariate(cfg.req_rate)
+            t += self._next_interval()
             if t >= cfg.sim_time:
                 break
             sid = self.rng.choices(range(cfg.n_sensors), weights=self.pop_weights)[0]
@@ -485,6 +611,18 @@ class Simulator:
         eub = (total_energy * 1000.0) / self.useful_bits if self.useful_bits else 0.0  # mJ/bit
         lifetime = self.first_death if self.first_death is not None else self.cfg.sim_time
         latency = 1000.0 * self.latency_sum / self.n_requests if self.n_requests else 0.0  # ms
+        # --- metriques d'instrumentation (revision PEMWN) ---
+        chr_exact = 100.0 * self.n_exact_hits / self.n_requests if self.n_requests else 0.0
+        chr_sem = 100.0 * self.n_sem_hits / self.n_requests if self.n_requests else 0.0
+        ne = len(self.sem_errors)
+        if ne:
+            mae = sum(self.sem_errors) / ne
+            rmse = math.sqrt(sum(e * e for e in self.sem_errors) / ne)
+            srt = sorted(self.sem_errors)
+            p95 = srt[min(ne - 1, max(0, int(math.ceil(0.95 * ne)) - 1))]
+            emax = srt[-1]
+        else:
+            mae = rmse = p95 = emax = 0.0
         return {
             "strategy": self.cfg.strategy,
             "cache_size": self.cfg.cache_size,
@@ -497,6 +635,17 @@ class Simulator:
             "lifetime": lifetime,
             "latency_ms": latency,
             "n_requests": self.n_requests,
+            # instrumentation
+            "CHR_exact": chr_exact,
+            "CHR_sem": chr_sem,
+            "n_backhaul": self.n_backhaul,
+            "n_sem_rejected": self.n_sem_rejected,
+            "sem_mae": mae,
+            "sem_rmse": rmse,
+            "sem_p95": p95,
+            "sem_max": emax,
+            "n_tx_lost": self.n_tx_lost,
+            "n_retx": self.n_retx,
         }
 
 

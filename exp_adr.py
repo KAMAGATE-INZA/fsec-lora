@@ -16,8 +16,8 @@ from concurrent.futures import ProcessPoolExecutor
 import numpy as np
 from fsec_sim import Config, run_one
 
-SEEDS = list(range(12))
-BASE = dict(cache_size=100, adr=True, n_sensors=150, sim_time=2400.0)
+SEEDS = list(range(39))
+BASE = dict(cache_size=100, adr=True, n_sensors=150, sim_time=3600.0)
 
 
 def _job(args):

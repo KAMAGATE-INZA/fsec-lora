@@ -69,7 +69,7 @@ private:
 private:
   std::list<EntryRef> m_entries;   // entrees suivies par la politique
   double m_alpha = 1.5;
-  double m_beta  = 1.0;
+  double m_beta  = 0.5;   // optimum grid search (CHR x FHR max, EUB min)
   double m_kappa = 3.0;
   double m_uSeuil = 0.05;
 };

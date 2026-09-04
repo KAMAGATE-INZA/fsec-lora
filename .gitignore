@@ -7,7 +7,7 @@ venv/
 
 # Résultats générés (régénérables via run_campaign.py)
 results.csv
-
+results_beta1.0_backup.csv
 # Système
 .DS_Store
 Thumbs.db
@@ -16,3 +16,14 @@ Thumbs.db
 *.o
 *.so
 build/
+*.tex
+*.html
+*.pdf
+*.pptx
+# Jeux de données réels (volumineux, à télécharger séparément — voir rev/README_traces_reelles.md)
+data/
+# Résultats générés supplémentaires
+result.csv
+rev/*.csv
+# Aperçus / images temporaires
+*.jpg
