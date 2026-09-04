@@ -180,8 +180,52 @@ def fig_F():
     save(fig, "fig_expF_fiabilite_radio")
 
 
+# ---------------------------------------------------------------- Données réelles
+def _sweep_real(rt, tr, sds, **kw):
+    chr_f, sem_f, chr_l = [], [], []
+    for s in sds:
+        f = [rt.run_trace(tr, "FSEC", sigma_d=s, seed=k, **kw)["CHR"] for k in range(5)]
+        se = [rt.run_trace(tr, "FSEC", sigma_d=s, seed=k, **kw)["CHR_sem"] for k in range(5)]
+        l = [rt.run_trace(tr, "LRU", sigma_d=s, seed=k, **kw)["CHR"] for k in range(5)]
+        chr_f.append(np.mean(f)); sem_f.append(np.mean(se)); chr_l.append(np.mean(l))
+    return chr_f, sem_f, chr_l
+
+
+def fig_real():
+    import real_trace as rt
+    D = os.path.join(HERE, "data")
+    intel, iloc = os.path.join(D, "data.txt"), os.path.join(D, "mote_locs.txt")
+    melb = os.path.join(D, "microclimate-sensors-data.csv")
+    fig, ax = plt.subplots(1, 2, figsize=(12, 4.4))
+    # (a) Intel, intérieur dense
+    if os.path.exists(intel) and os.path.exists(iloc):
+        tr = rt.load_intel_lab(intel, iloc, "temperature")
+        sds = [3, 5, 8, 12, 20]
+        cf, sf, cl = _sweep_real(rt, tr, sds)
+        ax[0].plot(sds, cf, "-o", color=COL["FSEC"], label="FSEC")
+        ax[0].plot(sds, sf, "--", color=COL["FSEC"], alpha=0.55, label="FSEC part sémantique")
+        ax[0].plot(sds, cl, "-s", color=COL["LRU"], label="LRU")
+        ax[0].set_title(f"(a) Intel Berkeley Lab — intérieur dense ({len(tr['pos'])} capteurs)")
+    else:
+        ax[0].text(0.5, 0.5, "données Intel absentes", ha="center", transform=ax[0].transAxes)
+    ax[0].set_xlabel("σ_d : largeur du noyau spatial (m)"); ax[0].set_ylabel("CHR (%)"); ax[0].legend()
+    # (b) Melbourne, extérieur épars (cache réduit = pression d'éviction)
+    if os.path.exists(melb):
+        tr = rt.load_melbourne(melb)
+        sds = [200, 400, 600, 1000, 1500]
+        cf, sf, cl = _sweep_real(rt, tr, sds, cache_size=6)
+        ax[1].plot(sds, cf, "-o", color=COL["FSEC"], label="FSEC")
+        ax[1].plot(sds, sf, "--", color=COL["FSEC"], alpha=0.55, label="FSEC part sémantique")
+        ax[1].plot(sds, cl, "-s", color=COL["LRU"], label="LRU")
+        ax[1].set_title(f"(b) City of Melbourne — extérieur épars ({len(tr['pos'])} capteurs)")
+    else:
+        ax[1].text(0.5, 0.5, "données Melbourne absentes", ha="center", transform=ax[1].transAxes)
+    ax[1].set_xlabel("σ_d : largeur du noyau spatial (m)"); ax[1].set_ylabel("CHR (%)"); ax[1].legend()
+    save(fig, "fig_real_donnees")
+
+
 if __name__ == "__main__":
-    for f in (fig_A, fig_B, fig_C, fig_D, fig_E, fig_F):
+    for f in (fig_A, fig_B, fig_C, fig_D, fig_E, fig_F, fig_real):
         try:
             f()
         except Exception as e:
