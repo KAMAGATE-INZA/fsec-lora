@@ -180,6 +180,39 @@ def fig_F():
     save(fig, "fig_expF_fiabilite_radio")
 
 
+# ---------------------------------------------------------------- Balayage utilité
+def fig_grid():
+    """Sensibilité du score CHR·FHR aux exposants de la fonction d'utilité
+    (α, β, κ), à seuil U_th fixé. Données : recherche en grille de results.csv."""
+    try:
+        from analyze import _load_results
+        df = _load_results(os.path.join(HERE, "results.csv"))
+    except Exception as e:
+        print("grille indisponible:", e); return
+    g = df[df.experiment == "grid"].copy()
+    if g.empty:
+        print("pas de données 'grid' dans results.csv"); return
+    g["u_seuil"] = pd.to_numeric(g.get("u_seuil", 0.05), errors="coerce").fillna(0.05)
+    g = g[np.isclose(g.u_seuil, 0.05)]            # isole l'effet des exposants au seuil retenu
+    g["score"] = g.CHR * g.FHR / 100.0
+    params = [("alpha", "α : exposant de fraîcheur"),
+              ("beta", "β : exposant de corrélation spatiale"),
+              ("kappa", "κ : poids du coût d'un miss")]
+    fig, ax = plt.subplots(1, 3, figsize=(14, 4.2), sharey=True)
+    for a, (col, lab) in zip(ax, params):
+        gg = g.groupby(col).score
+        xs = sorted(gg.groups)
+        m = [gg.get_group(x).mean() for x in xs]
+        e = [ci95(gg.get_group(x)) for x in xs]
+        a.errorbar(xs, m, yerr=e, marker="o", capsize=3, color="#d62728")
+        a.set_xlabel(lab)
+    ax[0].set_ylabel("Score  CHR · FHR / 100")
+    fig.suptitle("Balayage de la fonction d'utilité : β est le paramètre déterminant sur CHR·FHR "
+                 "(α sans effet ; κ à faible effet ici, décisif sur la durée de vie à basse batterie)",
+                 fontsize=11.5)
+    save(fig, "fig_grid_utilite")
+
+
 # ---------------------------------------------------------------- Données réelles
 def _sweep_real(rt, tr, sds, **kw):
     chr_f, sem_f, chr_l = [], [], []
@@ -225,7 +258,7 @@ def fig_real():
 
 
 if __name__ == "__main__":
-    for f in (fig_A, fig_B, fig_C, fig_D, fig_E, fig_F, fig_real):
+    for f in (fig_A, fig_B, fig_C, fig_D, fig_E, fig_F, fig_grid, fig_real):
         try:
             f()
         except Exception as e:
